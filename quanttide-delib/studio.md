@@ -1,33 +1,71 @@
-# qtcloud-delib studio 升级方案
+# qtcloud-delib studio 本体重建
 
-这份方案把 studio 的升级定为版本升级，不是两个系统长期共存：终点是 qtcloud-delib 跑新模型（`profile/quanttide-delib` 的五类型），旧功能一个不丢。结构按三层划——地基（议程、机构、代表）、左过程层（五流程怎么推进）、右效力层（决议怎么算数），分界线落在表决点。
+做法定为删除重写：不迁移、不兼容，旧模型（provider 的 `Topic`/`Resolution` 两对象与 studio 的 `Resolution` 模型）整体作废，按三层本体从头建。旧库表不再维护，种子数据按新模型重新灌；迁移盘点、字段四态、功能保留这些事随之全部消失。词表问题也随删除一并解决——不再有 Topic 占着「议题」，AgendaItem 专有其名。
 
-## 阶段一 盘点与补洞
+## 地基
 
-先设计后动工。拿 provider 的真库表（`topics`、`resolutions`，含 `seconder_ids_json`、`votes_json` 两个 JSON 列）与 studio 的模型和页面，逐字段标四态：左、右、地基、不迁。标不出去的字段说明新模型有漏洞，回改 profile；判「不迁」的字段（纯 UI 状态、纯日志）留档丢弃，不硬塞进前三态。
+三个共享实体，先建，两侧引用：
 
-盘点同时补新模型自己的三个洞：票数载体（`VoteResult` 一类的结构）、附议、辩论——这三样在 qtcloud-delib 有、在 profile 的式子里没有，不补，迁移时它们无处安放。阶段产出两张东西：字段盘点表、profile 的下一版。
+```text
+Assembly    ::= id   : 机构（公司、联盟、实训基地，单机构场景落默认机构）
+                rules : 本机构的议事规则
+Member      ::= id     : 代表
+                org    : 派出机构
+AgendaItem  ::= id       : 议题编号
+                summary  : 摘要
+                onAgenda : Bool        # 先上议程，才碰草案
+```
 
-## 阶段二 地基先建
+账号 ID 在这层映射成「某机构的代表」，代表组成代表大会；议程属于机构的一次会议，跨机构交换的是 AgendaItem。
 
-机构与代表先立：账号 ID 映射成「某机构的代表」，代表组成代表大会。单机构场景（公司周会、议事型课堂）先落一个默认机构，现库数据不用动。随后建议程与议题（`AgendaItem`：编号、摘要、`onAgenda`）——跨机构议题交换只有挂上议程才有地方去。
+## 过程层
 
-## 阶段三 过程层收编
+五流程整个收进 Draft，从内部工作流程原样继承，不削格：
 
-Topic 按「动议文档」的定义收窄，位置对上 Draft：五状态细化进 `Draft.state`（`proposed`、`seconded`、`debated` 对应上桌前后，`voted` 到 `resolved` 或 `rejected` 对应收表决结果），`VoteResult`、附议人、辩论记录留在左层——它们回答「怎么走到表决」，不参与效力判定。Topic 挂到议程条目之下，单文档管理保留到表决点为止。
+```text
+Draft ::= item     : 议题编号          # 只挂一条议题
+          text     : 版本链            # 每次修订出一版
+          proposer : 动议人（代表）
+          seconders: 附议人
+          debate   : 辩论记录
+          votes    : {for, against, abstain}
+          state    : proposed → seconded → debated → voted
+                     → passed | rejected
 
-## 阶段四 效力层接上
+second : pre  state = proposed     post seconded
+debate : pre  state = seconded     post debated
+vote   : pre  state = debated      post voted → passed（发号产生决议） | rejected（可改版重提）
+```
 
-接口只画到 pending：表决通过，发号产生决议，相位是 `pending`；认证是效力侧自己的下一格——表决不等于社区决议，`C(r)` 要认证在场才成立，发布闸门只放行满足 `C` 的决议。文本冻结自表决点生效，此后的改动走新版本，不改原记录。
+门留在讨论过程上：不附议不能辩，不辩论不能表决，不表决不能归档。单文档管理保留到表决点为止，`passed` 那一刻正文定版，此后改动走新版本。
 
-## 阶段五 迁移与验收
+## 效力层
 
-按盘点表搬：过程数据进左，效力数据进右，机构、代表、议程进地基，不迁的留档。验收一正一反两查。正查：一份五流程文档走完，决议记录、机构归属、效力状态能从它重放出来；反查：任何已发布的社区决议，能回溯到唯一一份过程文档与它所在的议程条目。两头查得通，升级成立。
+表决通过才发号，效力链从 `pending` 起步：
 
-## 词表归属（待裁）
+```text
+Resolution ::= id    : 决议号，一号一命
+                item  : 议题编号
+                org   : 通过它的机构
+                draft : 由哪份草案的哪次表决产生
+                phase : pending → certified → published
 
-决议、发号、认证、发布归效力侧作主定义；动议、附议、辩论、`resolved` 归过程侧；议题与议程归地基，两侧引用。判据和字段盘点同一把尺：说效力的归右，说推进的归左，两侧都要用的归地基。命名归用户，这里只定归属，不定叫法。
+C(r) ≡ phase = certified ∨ phase = published   # 社区决议的判定条件
+certify : pre  phase = pending    post certified    # 创始人认证
+publish : pre  C(r)               post published    # 官网闸门
+```
 
-## 不丢功能的依据
+表决不等于社区决议：接口只画到 `pending`，认证是效力侧自己的下一格。文本自发号起冻结，改动走修正记录，不改原文。
 
-升级不是砍功能，是把混在一份文档里的东西分开放：讨论过程在左层保留，还多了版本与冻结的边界；决议存档在右层保留，还多了效力判定；谁参与过在地基保留，从账号升级成机构代表。三格抽屉，功能各归各位。
+## 关系与不变量
+
+```text
+Assembly 有议程，议程收 AgendaItem，AgendaItem 下挂 Draft，Draft 经表决升成 Resolution
+inv1  被称为社区决议 ⇒ C(r)
+inv2  发在议事中心官网 ⇒ certified(r)
+inv3  审议中的草案 ⇒ 其议题在议程上
+```
+
+## 建的顺序与验收
+
+顺序：地基（机构、代表、议程）→ 过程层（Draft 五流程与四道门）→ 效力层（发号、认证、发布）→ 按新模型重灌种子 → 验收。验收两查：正查，一份五流程文档走完，决议号、机构归属、效力相位能从它重放出来；反查，任何已发布的社区决议能回溯到唯一一份草案与它所在的议程条目。两查通了，重建完成。
